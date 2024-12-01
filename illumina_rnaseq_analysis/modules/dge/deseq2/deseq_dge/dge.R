@@ -12,20 +12,41 @@ source(file.path(script_dir, "visualisation", "save_figure.R"))
 
 
 # Function to perform RNA-seq analysis for a specific contrast
-dge_separately_contrast_analysis <- function(filtered_countdata_df, selected_metadata_df, filtered_contrast_df, ResultDir, OutputFilename) {
+dge_separately_contrast_analysis <- function(filtered_countdata_df, selected_metadata_df, filtered_covar_df, filtered_contrast_df, ResultDir, OutputFilename) {
     
     # Ensure the result directory exists
     if (!dir.exists(ResultDir)) {
         dir.create(ResultDir, recursive = TRUE)
     }
     
-    # Create DESeq2 dataset
-    selected_dds <- DESeqDataSetFromMatrix(
+
+    if (!is.null(filtered_covar_df)) {
+        # Merge metadata and covariates DataFrames
+        selected_metadata_df <- merge(
+            selected_metadata_df,filtered_covar_df,by = "id")
+    
+        # Identify all covariate columns (excluding "id" and "condition")
+        covariate_columns <- setdiff(colnames(selected_metadata_df), c("id", "condition"))
+        # Construct the design formula dynamically
+        design_formula <- as.formula(paste("~", paste(c(covariate_columns, "condition"), collapse = " + ")))
+
+    # Create DESeq2 dataset with dynamic covariates
+        selected_dds <- DESeqDataSetFromMatrix(
+            countData = filtered_countdata_df,
+            colData = full_metadata_df[, c("id", "condition", covariate_columns)],
+            design = design_formula
+        )
+
+    }else {
+        selected_metadata_df<-selected_metadata_df
+        # Create DESeq2 dataset
+        selected_dds <- DESeqDataSetFromMatrix(
         countData = filtered_countdata_df,
         colData = selected_metadata_df[, c("id", "condition")],
-        design = ~condition
-    )
-    
+        design = ~condition )
+    }
+
+
     Name <- paste0(filtered_contrast_df$Contrast, "_vs_", filtered_contrast_df$Reference)  # Naming convention
     
     # Estimate size factors and dispersions
@@ -68,8 +89,8 @@ dge_separately_contrast_analysis <- function(filtered_countdata_df, selected_met
     }
 
     # Generate plots and heatmaps
-    create_pca_plot(selected_rld, selected_metadata_df[, c("id", "condition")], ResultDir, OutputFilename)
-    create_mds_plot(selected_rld, selected_metadata_df[, c("id", "condition")], ResultDir, OutputFilename)
+    create_pca_plot(selected_rld, selected_metadata_df, ResultDir, OutputFilename)
+    create_mds_plot(selected_rld, selected_metadata_df, ResultDir, OutputFilename)
     
     # Sample-level correlation heatmaps
     create_correlation_heatmap(selected_rld, selected_metadata_df[, c("id", "condition")], ResultDir, glue("sample_level_correlation_", OutputFilename))
@@ -94,7 +115,7 @@ dge_separately_contrast_analysis <- function(filtered_countdata_df, selected_met
 
 
 # Wrapper function to process all contrasts
-separate_deg_all_contrasts <- function(contrast_df, metadata_df, countdata_df, ResultDir) {
+separate_deg_all_contrasts <- function(contrast_df, metadata_df, covar_df, countdata_df, ResultDir) {
     for (i in seq_len(nrow(contrast_df))) {
         print(i)  # Print the current contrast index
         CONDITION <- "condition"
@@ -108,7 +129,7 @@ separate_deg_all_contrasts <- function(contrast_df, metadata_df, countdata_df, R
 
         # Filter count data for selected samples
         filtered_countdata_df <- countdata_df[, selected_metadata_df$id]
-        
+
         # Check if column names match IDs (sanity check)
         if (!identical(selected_metadata_df$id, colnames(filtered_countdata_df))) {
         stop("Mismatch between selected_metadata_df IDs and filtered_countdata_df column names!")
@@ -117,17 +138,23 @@ separate_deg_all_contrasts <- function(contrast_df, metadata_df, countdata_df, R
         # Filter contrast data for the current pair
         filtered_contrast_df <- as.data.frame(contrast_df[contrast_df$Reference == REFERENCE & contrast_df$Contrast == TREATED, , drop = FALSE])
         
+        if (!is.null(covar_df)) {
+            filtered_covar_df <- covar_df[covar_df$id %in% selected_metadata_df$id, ]
+        }else {
+           filtered_covar_df<-NULL
+        }
+
         # Perform RNA-seq analysis for the specific contrast
         dge_separately_contrast_analysis(
         filtered_countdata_df,
         selected_metadata_df,
+        filtered_covar_df,
         filtered_contrast_df,
         ResultDir,
         OutputFilename
         )
     }
 }
-
 
 
 ##Deseq analysis function 
@@ -198,11 +225,9 @@ perform_deseq2_analysis <- function(dds, contrast_df, normalized_counts, metadat
         deg_heatmap(res_df, 100, normalized_counts, selected_metadata[, c('id', 'condition')], glue('{ResultDir}/DGE/plots/{Name}'), OutputFilename)
         deg_heatmap(res_df, 100, normalized_counts, selected_metadata[, c('id', 'condition')], glue('{ResultDir}/DGE/plots/{Name}'), OutputFilename)
 
-
         # Add prefix to all columns except gene_id
         res_df <- res_df %>%rename_with(~ ifelse(. == "gene_id", ., paste(OutputFilename, ., sep = "_")), -gene_id)
         all_res_df <- full_join(all_res_df, res_df, by = "gene_id")
-
     }
 
     # Save all merged counts to a single CSV file
